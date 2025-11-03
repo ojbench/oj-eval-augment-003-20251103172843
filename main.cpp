@@ -255,6 +255,21 @@ static void do_freeze(){
     cout << "[Info]Freeze scoreboard.\n";
 }
 
+struct Node { int id; };
+struct NodeCmp {
+    bool operator()(const Node &a, const Node &b) const {
+        const Team &A = st.teams[a.id];
+        const Team &B = st.teams[b.id];
+        if(A.solved_cnt != B.solved_cnt) return A.solved_cnt > B.solved_cnt;
+        if(A.penalty != B.penalty) return A.penalty < B.penalty;
+        const auto &Ats=A.solve_times_desc, &Bts=B.solve_times_desc;
+        size_t n=min(Ats.size(), Bts.size());
+        for(size_t i=0;i<n;i++) if(Ats[i]!=Bts[i]) return Ats[i] < Bts[i];
+        if(Ats.size()!=Bts.size()) return Ats.size() < Bts.size();
+        return A.name < B.name;
+    }
+};
+
 static void do_scroll(){
     if(!st.freeze_active){
         cout << "[Error]Scroll failed: scoreboard has not been frozen.\n";
@@ -266,43 +281,35 @@ static void do_scroll(){
     do_flush(false);
     print_scoreboard(st.last_flushed_order, true);
 
-    // prepare mutable order for live updates during scroll
-    st.cur_order = st.last_flushed_order;
-    st.pos.assign(st.teams.size(), 0);
-    for(int i=0;i<(int)st.cur_order.size();++i) st.pos[ st.cur_order[i] ] = i;
+    // Build ranking set from current teams
+    set<Node, NodeCmp> rankSet;
+    int nTeams = (int)st.teams.size();
+    for(int i=0;i<nTeams;i++) rankSet.insert(Node{i});
 
-    // build selection set: (position, team_id) for teams with frozen problems
-    set<pair<int,int>> frozen_set; // ordered by position asc
-    vector<char> inset(st.teams.size(), 0);
-    for(int i=0;i<(int)st.cur_order.size();++i){
-        int ti = st.cur_order[i];
-        if(st.teams[ti].frozen_problems_cnt>0){
-            frozen_set.insert({i, ti}); inset[ti]=1;
-        }
-    }
+    // Build frozen team set ordered by current ranking (worst at end)
+    set<Node, NodeCmp> frozenSet;
+    for(int i=0;i<nTeams;i++) if(st.teams[i].frozen_problems_cnt>0) frozenSet.insert(Node{i});
 
-    // perform unfreezing steps
-    while(!frozen_set.empty()){
-        // pick lowest-ranked (largest position)
-        auto it_last = prev(frozen_set.end());
-        int chosen_pos = it_last->first;
-        int chosen_team = it_last->second;
-        frozen_set.erase(it_last);
-        inset[chosen_team]=0;
+    while(!frozenSet.empty()){
+        // pick lowest-ranked frozen team
+        auto itWorst = prev(frozenSet.end());
+        int ti = itWorst->id;
+        frozenSet.erase(itWorst);
 
-        // choose smallest problem letter that is frozen
+        // choose smallest frozen problem
         int chosen_prob=-1;
-        for(int p=0;p<st.M;p++) if(st.teams[chosen_team].prob[p].is_frozen){ chosen_prob=p; break; }
-        if(chosen_prob==-1){
-            st.teams[chosen_team].frozen_problems_cnt = 0; // inconsistent; skip
-            continue;
-        }
+        for(int p=0;p<st.M;p++) if(st.teams[ti].prob[p].is_frozen){ chosen_prob=p; break; }
+        if(chosen_prob==-1){ st.teams[ti].frozen_problems_cnt=0; continue; }
 
-        auto &tm = st.teams[chosen_team];
-        auto &ps = tm.prob[chosen_prob];
-        int old_pos = st.pos[chosen_team];
+        Team &tm = st.teams[ti];
+        ProblemState &ps = tm.prob[chosen_prob];
 
-        // Apply frozen submissions to public state
+        // Find position before removal
+        auto itOld = rankSet.lower_bound(Node{ti});
+        auto itOldNext = next(itOld);
+        rankSet.erase(itOld);
+
+        // Apply frozen submissions
         for(auto &rec : ps.frozen_subs){
             if(ps.solved) break;
             if(rec.first==ACC){
@@ -317,37 +324,33 @@ static void do_scroll(){
         ps.frozen_subs.clear();
         if(ps.is_frozen){ ps.is_frozen=false; tm.frozen_problems_cnt--; }
 
-        // update ranking position (team may move up)
-        move_team_up_in_order(chosen_team, st.cur_order, st.pos);
-        int new_pos = st.pos[chosen_team];
-        if(new_pos < old_pos){
+        // Determine new insertion position and whether ranking changed
+        auto itNewPos = rankSet.lower_bound(Node{ti});
+        bool changed = (itNewPos != itOldNext);
+        if(changed){
             string team1 = tm.name;
-            string team2 = st.teams[ st.cur_order[new_pos+1] ].name;
+            string team2 = (itNewPos==rankSet.end()? st.teams[ prev(itNewPos)->id ].name : st.teams[itNewPos->id].name);
+            // itNewPos cannot be end() when improved; but guard anyway
             cout << team1 << ' ' << team2 << ' ' << tm.solved_cnt << ' ' << tm.penalty << "\n";
-            // teams in positions [new_pos+1 .. old_pos] moved down by 1; update their keys in set if present
-            for(int j=new_pos+1; j<=old_pos; ++j){
-                int tj = st.cur_order[j];
-                if(inset[tj]){
-                    frozen_set.erase({j-1, tj});
-                    frozen_set.insert({j, tj});
-                }
-            }
         }
-        // re-insert chosen team if it still has frozen problems
-        if(tm.frozen_problems_cnt>0){
-            frozen_set.insert({new_pos, chosen_team});
-            inset[chosen_team]=1;
-        }
+        // Insert team back with updated key
+        rankSet.insert(Node{ti});
+
+        // Reinsert into frozen set if still has frozen problems
+        if(tm.frozen_problems_cnt>0) frozenSet.insert(Node{ti});
     }
 
     // End of scrolling
     st.freeze_active=false;
 
-    // print scoreboard after scrolling (now no frozen cells remain)
-    print_scoreboard(st.cur_order, false);
+    // print scoreboard after scrolling
+    // Gather order from rankSet
+    vector<int> order;
+    order.reserve(nTeams);
+    for(const auto &node : rankSet) order.push_back(node.id);
+    print_scoreboard(order, false);
 
-    // After scrolling, update last flushed order to the final scoreboard
-    st.last_flushed_order = st.cur_order;
+    st.last_flushed_order = order;
 }
 
 static void do_query_ranking(const string &team_name){
