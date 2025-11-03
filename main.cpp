@@ -257,37 +257,41 @@ static void do_scroll(){
     st.pos.assign(st.teams.size(), 0);
     for(int i=0;i<(int)st.cur_order.size();++i) st.pos[ st.cur_order[i] ] = i;
 
-    // perform unfreezing steps
-    int n = st.teams.size();
-    while(true){
-        // find lowest-ranked team having frozen problems
-        int chosen_team = -1; int chosen_pos=-1;
-        for(int i=n-1;i>=0;--i){
-            int ti = st.cur_order[i];
-            if(st.teams[ti].frozen_problems_cnt>0){ chosen_team=ti; chosen_pos=i; break; }
+    // build selection set: (position, team_id) for teams with frozen problems
+    set<pair<int,int>> frozen_set; // ordered by position asc
+    vector<char> inset(st.teams.size(), 0);
+    for(int i=0;i<(int)st.cur_order.size();++i){
+        int ti = st.cur_order[i];
+        if(st.teams[ti].frozen_problems_cnt>0){
+            frozen_set.insert({i, ti}); inset[ti]=1;
         }
-        if(chosen_team==-1) break; // no more frozen problems
+    }
+
+    // perform unfreezing steps
+    while(!frozen_set.empty()){
+        // pick lowest-ranked (largest position)
+        auto it_last = prev(frozen_set.end());
+        int chosen_pos = it_last->first;
+        int chosen_team = it_last->second;
+        frozen_set.erase(it_last);
+        inset[chosen_team]=0;
 
         // choose smallest problem letter that is frozen
         int chosen_prob=-1;
-        for(int p=0;p<st.M;p++){
-            if(st.teams[chosen_team].prob[p].is_frozen){ chosen_prob=p; break; }
-        }
+        for(int p=0;p<st.M;p++) if(st.teams[chosen_team].prob[p].is_frozen){ chosen_prob=p; break; }
         if(chosen_prob==-1){
-            // should not happen; fix counter
-            st.teams[chosen_team].frozen_problems_cnt = 0;
+            st.teams[chosen_team].frozen_problems_cnt = 0; // inconsistent; skip
             continue;
         }
+
         auto &tm = st.teams[chosen_team];
         auto &ps = tm.prob[chosen_prob];
-
-        // Apply frozen submissions to public state
         int old_pos = st.pos[chosen_team];
 
+        // Apply frozen submissions to public state
         for(auto &rec : ps.frozen_subs){
-            if(ps.solved) break; // further subs do not change state
+            if(ps.solved) break;
             if(rec.first==ACC){
-                // all previous wrongs are already counted by increasing wrong_revealed along the way
                 ps.solved=true; ps.solve_time=rec.second;
                 tm.solved_cnt++;
                 tm.penalty += 20LL * ps.wrong_revealed + rec.second;
@@ -296,21 +300,29 @@ static void do_scroll(){
                 ps.wrong_revealed++;
             }
         }
-        // clear frozen state for this problem
         ps.frozen_subs.clear();
-        if(ps.is_frozen){
-            ps.is_frozen=false;
-            tm.frozen_problems_cnt--;
-        }
+        if(ps.is_frozen){ ps.is_frozen=false; tm.frozen_problems_cnt--; }
 
         // update ranking position (team may move up)
         move_team_up_in_order(chosen_team, st.cur_order, st.pos);
         int new_pos = st.pos[chosen_team];
         if(new_pos < old_pos){
-            // ranking changed due to this unfreeze
             string team1 = tm.name;
-            string team2 = st.teams[ st.cur_order[new_pos+1] ].name; // the team previously at position new_pos before team1 moved here
+            string team2 = st.teams[ st.cur_order[new_pos+1] ].name;
             cout << team1 << ' ' << team2 << ' ' << tm.solved_cnt << ' ' << tm.penalty << "\n";
+            // teams in positions [new_pos+1 .. old_pos] moved down by 1; update their keys in set if present
+            for(int j=new_pos+1; j<=old_pos; ++j){
+                int tj = st.cur_order[j];
+                if(inset[tj]){
+                    frozen_set.erase({j-1, tj});
+                    frozen_set.insert({j, tj});
+                }
+            }
+        }
+        // re-insert chosen team if it still has frozen problems
+        if(tm.frozen_problems_cnt>0){
+            frozen_set.insert({new_pos, chosen_team});
+            inset[chosen_team]=1;
         }
     }
 
