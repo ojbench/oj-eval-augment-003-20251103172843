@@ -220,16 +220,30 @@ static void print_scoreboard(const vector<int> &order, bool before_scroll_view){
 }
 
 static void move_team_up_in_order(int ti, vector<int> &order, vector<int> &pos){
-    int i = pos[ti];
-    while(i>0){
-        int tj = order[i-1];
+    int old_pos = pos[ti];
+    if(old_pos==0) return;
+    // binary search for new position in [0, old_pos]
+    int l=0, r=old_pos;
+    while(l<r){
+        int m=(l+r)/2;
+        int tj = order[m];
+        // if ti should be before tj
         if(team_better(st.teams[ti], st.teams[tj]) || (!team_better(st.teams[tj], st.teams[ti]) && st.teams[ti].name < st.teams[tj].name)){
-            // swap
-            order[i-1]=ti; order[i]=tj;
-            pos[ti]=i-1; pos[tj]=i;
-            --i;
-        }else break;
+            r=m;
+        }else{
+            l=m+1;
+        }
     }
+    int new_pos = l;
+    if(new_pos==old_pos) return;
+    // shift down [new_pos, old_pos-1]
+    for(int i=old_pos; i>new_pos; --i){
+        int tj = order[i-1];
+        order[i]=tj;
+        pos[tj]=i;
+    }
+    order[new_pos]=ti;
+    pos[ti]=new_pos;
 }
 
 static void do_freeze(){
