@@ -4,4 +4,6 @@ Makefile
 cmake_install.cmake
 code
 build/
+*.mine
+
 
